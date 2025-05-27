@@ -1,0 +1,59 @@
+# port to uv next?
+# FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.9.0-cudnn-runtime-ubuntu24.04
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CUDA_VISIBLE_DEVICES=0
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    python3-dev \
+    git \
+    wget \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create symbolic link for python
+RUN ln -s /usr/bin/python3 /usr/bin/python
+
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies
+# RUN pip install --no-cache-dir --upgrade pip --break-system-packages
+
+# Install PyTorch with CUDA support first
+RUN pip install --no-cache-dir torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0  --break-system-packages
+# --index-url https://download.pytorch.org/whl/cu121
+
+# Install ColPali and other dependencies
+RUN pip install --no-cache-dir --break-system-packages\
+    colpali_engine>=0.3.1 \
+    transformers>=4.45.0 \
+    fastapi \
+    uvicorn[standard] \
+    python-multipart \
+    pillow \
+    numpy \
+    pydantic \
+    requests
+
+# Copy the service code
+COPY colnomic_7b_embedding_service.py .
+
+# Create a non-root user for security
+RUN useradd -m -u 1001 colpali && chown -R colpali:colpali /app
+USER colpali
+
+# Expose the port
+EXPOSE 8001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8001/health || exit 1
+
+# Run the service
+CMD ["python", "colnomic_7b_embedding_service.py"] 
