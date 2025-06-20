@@ -15,7 +15,6 @@ import numpy as np
 from PIL import Image
 import io
 import base64
-import json
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
@@ -23,22 +22,30 @@ class Pipeline:
     class Valves(BaseModel):
         COLPALI_API_ENDPOINT: str
         VLM_API_ENDPOINT: str
+        VLM_API_KEY: str
         VLM_MODEL_ID: str
         QDRANT_URL: str
+        QDRANT_API_KEY: str
         COLLECTION_NAME: str
         VLM_SYS_PROMPT: str
         TOP_K: int
+        GAP_BASED_THRESHOLD: float
+        ADAPTIVE_THRESHOLD: float
 
     def __init__(self):
-        self.name = "ColPali RAG Multiple Retrieval + Threshold Filtering Pipeline"
+        self.name = "ColNomic + GPT + Threshold Filtering Pipeline"
         self.valves = self.Valves(
-            COLPALI_API_ENDPOINT=os.getenv("COLPALI_API_ENDPOINT", "http://nomic-embedding-service"),
-            VLM_API_ENDPOINT=os.getenv("VLM_API_ENDPOINT", "http://your-vlm-endpoint/v1"),
-            VLM_MODEL_ID=os.getenv("VLM_MODEL_ID", "Qwen2.5-VL-7B-Instruct"),
-            QDRANT_URL=os.getenv("QDRANT_URL", "http://your-qdrant-installation-name:6333"),
-            COLLECTION_NAME=os.getenv("QDRANT_COLLECTION", "colpali_documents"),
-            VLM_SYS_PROMPT=os.getenv("VLM_SYS_PROMPT", "You are an expert document analyst. Analyze all the provided document images and answer the question based on what you can see across all the documents. Be comprehensive and cite specific details from the relevant documents. If information is found in multiple documents, mention that."),
-            TOP_K=int(os.getenv("TOP_K", "3"))
+            COLPALI_API_ENDPOINT=os.getenv("COLPALI_API_ENDPOINT", "http://my-nomic-embedding-service"),
+            VLM_API_ENDPOINT=os.getenv("VLM_API_ENDPOINT", "http://10.16.0.4:4000/v1"),
+            VLM_API_KEY=os.getenv("VLM_API_KEY", ""),
+            VLM_MODEL_ID=os.getenv("VLM_MODEL_ID", "gpt-4o"),
+            QDRANT_URL=os.getenv("QDRANT_URL", "http://my-qdrant-url"),
+            QDRANT_API_KEY=os.getenv("QDRANT_API_KEY", ""),
+            COLLECTION_NAME=os.getenv("QDRANT_COLLECTION", "my_collection"),
+            VLM_SYS_PROMPT=os.getenv("VLM_SYS_PROMPT", "Anda adalah seorang analis dokumen ahli dengan pengalaman luas dalam analisis lintas dokumen dan sintesis informasi. Tugas Anda adalah:  1. FASE ANALISIS: - Analisis setiap gambar dokumen yang diberikan secara individual - Identifikasi informasi kunci, termasuk tanggal, angka, topik utama, dan detail penting - Catat setiap hubungan atau kontradiksi antar dokumen  2. FASE RINGKASAN: - Berikan ringkasan singkat untuk setiap dokumen - Buat ringkasan terpadu yang menyoroti tema umum dan temuan kunci - Tunjukkan kualitas/kejelasan gambar dan setiap keterbatasan dalam membacanya  3. FASE JAWABAN PERTANYAAN: - Jawab pertanyaan spesifik menggunakan bukti dari dokumen - Kutip referensi spesifik menggunakan pengidentifikasi dokumen (misalnya, 'Dokumen A menyatakan...') - Soroti di mana beberapa dokumen mendukung suatu temuan - Tunjukkan dengan jelas jika ada informasi yang diperlukan yang hilang atau tidak jelas  Format jawaban Anda dengan: - Judul bagian yang jelas - Poin-poin untuk informasi kunci - Kutipan langsung ketika sangat relevan - Referensi silang antar dokumen  Jika Anda menemui keterbatasan dalam kualitas gambar atau kejelasan konten, harap nyatakan keterbatasan tersebut secara eksplisit dalam analisis Anda. Kembalikan respons dalam bahasa Indonesia."),
+            TOP_K=int(os.getenv("TOP_K", "3")),
+            GAP_BASED_THRESHOLD=os.getenv("GAP_BASED_THRESHOLD", "0.1"),
+            ADAPTIVE_THRESHOLD=os.getenv("ADAPTIVE_THRESHOLD", "1.0")
         )
         
         self.client = None
@@ -54,7 +61,7 @@ class Pipeline:
     def get_qdrant_client(self):
         """Get a connection to the Qdrant vector database"""
         if not self.client:
-            self.client = QdrantClient(url=self.valves.QDRANT_URL)
+            self.client = QdrantClient(url=self.valves.QDRANT_URL, api_key=self.valves.QDRANT_API_KEY)
         return self.client
 
     def initialize_data(self):
@@ -327,11 +334,11 @@ class Pipeline:
             "max_tokens": 1500,  # Increased for multiple documents
             "temperature": 0.01,
             "top_p": 0.001,
-            "top_k": 1,
         }
-        
+
         headers = {
-            "Content-Type": "application/json"
+            "Authorization": f"Bearer {self.valves.VLM_API_KEY}",
+            "Content-Type": "application/json",
         }
         
         # Make the API request
@@ -349,7 +356,7 @@ class Pipeline:
                 return result["choices"][0]["message"]["content"]
             else:
                 print(f"✗ Error from VLM API: {response.status_code} - {response.text}")
-                return f"Error: Failed to get response from VLM API. Status code: {response.status_code}"
+                return f"Error: Failed to get response from VLM API. {response.text}. Status code: {response.status_code}"
         except Exception as e:
             print(f"✗ Exception when calling VLM API: {str(e)}")
             return f"Error: {str(e)}"
@@ -382,8 +389,8 @@ class Pipeline:
                 print(f"  {result['rank']}. {result['title']}, Page {result['page_number']} (Score: {result['similarity']:.4f})")
             
             # Apply threshold filtering
-            gap_filtered_results = self.gap_based_threshold(results, gap_threshold=0.1)
-            adaptive_filtered_results = self.adaptive_threshold(results, std_multiplier=1.0)
+            gap_filtered_results = self.gap_based_threshold(results, gap_threshold=self.valves.GAP_BASED_THRESHOLD)
+            adaptive_filtered_results = self.adaptive_threshold(results, std_multiplier=self.valves.ADAPTIVE_THRESHOLD)
             
             # Extract images and metadata from all results (original)
             images = [result["image"] for result in results]
@@ -393,7 +400,7 @@ class Pipeline:
             # Get the answer from the VLM API with all images (original results)
             print(f"🤖 Generating comprehensive answer using VLM with {len(images)} images...")
             answer = self.query_vlm_api(query, images)
-            
+
             # Format the response with detailed document information
             doc_info = f"\n\n📋 **Source Information ({len(results)} documents analyzed):**\n"
             for result in results:
