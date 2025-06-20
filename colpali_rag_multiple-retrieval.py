@@ -15,6 +15,7 @@ import numpy as np
 from PIL import Image
 import io
 import base64
+import ast
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
@@ -33,7 +34,7 @@ class Pipeline:
         ADAPTIVE_THRESHOLD: float
 
     def __init__(self):
-        self.name = "ColNomic + GPT + Threshold Filtering Pipeline"
+        self.name = "ColNomic + GPT + Rerank + Threshold Filtering Pipeline"
         self.valves = self.Valves(
             COLPALI_API_ENDPOINT=os.getenv("COLPALI_API_ENDPOINT", "http://my-nomic-embedding-service"),
             VLM_API_ENDPOINT=os.getenv("VLM_API_ENDPOINT", "http://10.16.0.4:4000/v1"),
@@ -293,7 +294,7 @@ class Pipeline:
         image.save(buffered, format="WebP", quality=75)
         return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-    def query_vlm_api(self, query: str, images: list) -> str:
+    def query_vlm_api(self, query: str, images: list, page_numbers: list) -> str:
         """Queries VLM API with text and multiple images using OpenAI-compatible endpoint"""
         system_prompt = self.valves.VLM_SYS_PROMPT
         
@@ -320,7 +321,8 @@ class Pipeline:
             })
         
         # Add the text query with context about multiple documents
-        query_text = f"Question: {query}\n\nNote: You have been provided with {len(images)} document page(s) that are relevant to this question. Please analyze all of them and provide a comprehensive answer."
+        query_text = f"Question: {query}\n\nSorted page numbers based on initial similarity score: {page_numbers} \n\nNote: You have been provided with {len(images)} sorted page numbers and images (adjacent) based on ther initial similarity score. Please evaluate the relevancy of each page(s) against the query. Although the page numbers and images have been ordered based on the initial similarity score, you are allowed to re-rank them if necessary and filter out the nonrelevant one(s). Return only a dictionary, where the key is the original page number that is relevant to the question and the value is your final rank, that is ready to be converted to a real dictionary, no need to add explanation or comment, pure dictionary only"
+        # query_text = f"Question: {query}\n\nNote: You have been provided with {len(images)} document page(s) that are relevant to this question. Please analyze all of them and provide a comprehensive answer."
         
         messages[1]["content"].append({
             "type": "text",
@@ -384,9 +386,13 @@ class Pipeline:
             if not results:
                 return f"❌ No relevant documents found for your query. Please ensure documents have been indexed using the ColPali batch embedding script."
             
-            print(f"📄 Found {len(results)} relevant document(s) before threshold filtering:")
-            for result in results:
-                print(f"  {result['rank']}. {result['title']}, Page {result['page_number']} (Score: {result['similarity']:.4f})")
+            try:
+                print(f"📄 Found {len(results)} relevant document(s) before threshold filtering:")
+                for result in results:
+                    print(f"  {result['rank']}. {result['title']}, Page {result['page_number']} (Score: {result['similarity']:.4f})")
+            except Exception as e:
+                error_message = f"❌ Error experiment: {str(e)} \n\n{results}"
+                return error_message
             
             # Apply threshold filtering
             gap_filtered_results = self.gap_based_threshold(results, gap_threshold=self.valves.GAP_BASED_THRESHOLD)
@@ -396,20 +402,50 @@ class Pipeline:
             images = [result["image"] for result in results]
             gap_images = [result["image"] for result in gap_filtered_results]
             adaptive_images = [result["image"] for result in adaptive_filtered_results]
+
+            page_numbers = [result["page_number"] for result in results]
             
             # Get the answer from the VLM API with all images (original results)
             print(f"🤖 Generating comprehensive answer using VLM with {len(images)} images...")
-            answer = self.query_vlm_api(query, images)
 
-            # Format the response with detailed document information
-            doc_info = f"\n\n📋 **Source Information ({len(results)} documents analyzed):**\n"
-            for result in results:
-                doc_info += f"\n**{result['rank']}. {result['title']}**\n"
-                doc_info += f"   - Page: {result['page_number']}"
-                if result.get('total_pages'):
-                    doc_info += f" of {result['total_pages']}"
-                doc_info += f"\n   - Similarity Score: {result['similarity']:.4f}\n"
-                # doc_info += f"   - Embedding Type: {result.get('embedding_type', 'ColPali Multi-vector')}\n"
+            answer = self.query_vlm_api(query, images, page_numbers)
+            
+            try:
+                
+                reranked_docs = ast.literal_eval(answer)
+                new_results = [None] * len(reranked_docs)
+                
+                # Format the response with detailed document information
+                doc_info = f"\n\n📋 **Source Information ({len(reranked_docs)} documents analyzed):**\n"
+
+
+                doc_info += f"\n\nReranked docs: {reranked_docs}\n\nNew Results Initialization: {new_results}"
+
+
+                rank = 1
+                for result in results:
+                    if result['page_number'] in reranked_docs:
+                        new_rank = reranked_docs.get(result['page_number'])
+                        result['rank'] = new_rank
+                        new_results[new_rank-1] = result
+                    
+                    doc_info += f"\n**{rank}. {new_results['title']}**\n"
+                    doc_info += f"   - Page: {new_results['page_number']}"
+                    if new_results.get('total_pages'):
+                        doc_info += f" of {new_results['total_pages']}"
+                    doc_info += f"\n   - Similarity Score: {new_results['similarity']:.4f}\n"
+                    rank += 1
+                
+                results = new_results
+
+                doc_info += f"\n\n{new_results}"
+                return doc_info
+
+
+            except Exception as e:
+                error_message = f"❌ Error query vlm api: {str(e)} \n\nanswer: {self.query_vlm_api(query, images, results)}"
+                return error_message
+
             
             # Create threshold comparison information
             threshold_comparison = f"\n\n🎯 **Threshold Filtering Analysis:**\n\n"
