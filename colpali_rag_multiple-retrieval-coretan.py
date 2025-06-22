@@ -321,7 +321,7 @@ class Pipeline:
             })
         
         # Add the text query with context about multiple documents
-        query_text = f"Question: {query} \n\nYou are given a list of pages from a PDF document:{page_numbers} \n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. \n\nReturn your output as a dictionary in this format: {{<page_number>: <final rank>}} \n\nOnly return this dictionary. Do not include any explanation or extra text."
+        query_text = f"Question: {query} \n\nYou are given a list of pages from a PDF document:{page_numbers} \n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. If a page is irrelevant or unhelpful, feel free to exclude it from the result. \n\nReturn your output as a dictionary in this format: {{<page_number>: <final rank>}} \n\nOnly return this dictionary. Do not include any explanation or extra text."
 
         # query_text = f"Question: {query}\n\nNote: You have been provided with {len(images)} document page(s) that are relevant to this question. Please analyze all of them and provide a comprehensive answer."
 
@@ -387,14 +387,10 @@ class Pipeline:
             if not results:
                 return f"❌ No relevant documents found for your query. Please ensure documents have been indexed using the ColPali batch embedding script."
             
-            try:
-                print(f"📄 Found {len(results)} relevant document(s) before threshold filtering:")
-                for result in results:
-                    print(f"  {result['rank']}. {result['title']}, Page {result['page_number']} (Score: {result['similarity']:.4f})")
-            except Exception as e:
-                error_message = f"❌ Error experiment: {str(e)} \n\n{results}"
-                return error_message
-            
+            print(f"📄 Found {len(results)} relevant document(s) before threshold filtering:")
+            for result in results:
+                print(f"  {result['rank']}. {result['title']}, Page {result['page_number']} (Score: {result['similarity']:.4f})")
+        
             # Apply threshold filtering
             adaptive_filtered_results = self.adaptive_threshold(results, std_multiplier=self.valves.ADAPTIVE_THRESHOLD)
             
@@ -409,6 +405,7 @@ class Pipeline:
 
                 # Format the response with detailed document information
                 doc_info = f"\n\n📋 **Source Information ({len(reranked_docs)} documents analyzed):**\n"
+                
                 # Get the answer from the VLM API with all images (original results)
                 print(f"🤖 Generating re-ranked answer using VLM with {len(images)} images...")
 
