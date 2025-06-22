@@ -323,8 +323,6 @@ class Pipeline:
         # Add the text query with context about multiple documents
         query_text = f"Question: {query} \n\nYou are given a list of pages from a PDF document:{page_numbers} \n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. \n\nReturn your output as a dictionary in this format: {{<page_number>: <final rank>}} \n\nOnly return this dictionary. Do not include any explanation or extra text."
 
-        # query_text = f"Question: {query} \n\nYou are given a list of pages from a PDF document:{page_numbers} \n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. You may also filter out the nonrelevant page(s). \n\nReturn your output as a dictionary in this format: {{<page_number>: <final rank>}} \n\nOnly return this dictionary. If no page is relevant to the query, return an empty dictionary. Do not include any explanation or extra text. "
-
         # query_text = f"Question: {query}\n\nNote: You have been provided with {len(images)} document page(s) that are relevant to this question. Please analyze all of them and provide a comprehensive answer."
 
         messages[1]["content"].append({
@@ -398,86 +396,35 @@ class Pipeline:
                 return error_message
             
             # Apply threshold filtering
-            gap_filtered_results = self.gap_based_threshold(results, gap_threshold=self.valves.GAP_BASED_THRESHOLD)
             adaptive_filtered_results = self.adaptive_threshold(results, std_multiplier=self.valves.ADAPTIVE_THRESHOLD)
             
-            # Extract images and metadata from all results (original)
-            images = [result["image"] for result in results]
-            gap_images = [result["image"] for result in gap_filtered_results]
-            adaptive_images = [result["image"] for result in adaptive_filtered_results]
-
+            # Extract images and metadata from all results using adaptive threshold
+            images = [result["image"] for result in adaptive_filtered_results]
             page_numbers = [result["page_number"] for result in results]
-            
-            # Get the answer from the VLM API with all images (original results)
-            print(f"🤖 Generating comprehensive answer using VLM with {len(images)} images...")
-
-            answer = self.query_vlm_api(query, images, page_numbers)
-            reranked_docs = ast.literal_eval(answer)
-            new_results = [0] * len(reranked_docs)
-            
-            # Format the response with detailed document information
-            doc_info = f"\n\n📋 **Source Information ({len(reranked_docs)} documents analyzed):**\n"
-
-
-
-            doc_info += f"\n\nReranked docs: {reranked_docs}\n\nNew Results Initialization: {new_results}"
 
             try:
-                rank = 1
+                answer = self.query_vlm_api(query, images, page_numbers)
+                reranked_docs = ast.literal_eval(answer)
+                new_results = [0] * len(reranked_docs)
+
+                # Format the response with detailed document information
+                doc_info = f"\n\n📋 **Source Information ({len(reranked_docs)} documents analyzed):**\n"
+                # Get the answer from the VLM API with all images (original results)
+                print(f"🤖 Generating re-ranked answer using VLM with {len(images)} images...")
+
                 for result in results:
                     if isinstance(reranked_docs, dict) and result['page_number'] in reranked_docs:
                         new_rank = int(reranked_docs.get(result['page_number']))
                         result['rank'] = new_rank
                         new_results[new_rank-1] = result
-                        # return str(result)
-                    
-                    # doc_info += f"\n**{rank}. {new_results['title']}**\n"
-                    # doc_info += f"   - Page: {new_results['page_number']}"
-                    # if result.get('total_pages'):
-                    #     doc_info += f" of {new_results['total_pages']}"
-                #     doc_info += f"\n   - Similarity Score: {new_results['similarity']:.4f}\n"
-                    # rank += 1
-                
                 results = new_results
 
-                # doc_info += f"\n\n{str(new_results)}"
-                # return doc_info
-
-
             except Exception as e:
-                new_rank = 0
-                for result in results:
-                    if result['page_number'] in reranked_docs:
-                        new_rank = int(reranked_docs.get(result['page_number']))
-                        break
-                # error_message = f"❌ Error query vlm api: {str(e)} \n\nanswer: {ast.literal_eval(self.query_vlm_api(query, images, results))}"
-                error_message = f"❌ Error query vlm api: {str(e)} \n\nanswer: {isinstance(new_rank, int)}"
-
+                error_message = f"❌ Error query vlm api: {str(e)}"
                 return error_message
-
-            
-            # Create threshold comparison information
-            threshold_comparison = f"\n\n🎯 **Threshold Filtering Analysis:**\n\n"
-            
-            # Gap-based threshold results
-            threshold_comparison += f"**Gap-Based Threshold Results ({len(gap_filtered_results)} documents):**\n"
-            if len(gap_filtered_results) < len(results):
-                threshold_comparison += f"If we apply gap-based threshold, the results are {len(gap_filtered_results)} documents instead of {len(results)}:\n"
-                for result in gap_filtered_results:
-                    threshold_comparison += f"  - {result['title']}, Page {result['page_number']} (Score: {result['similarity']:.4f})\n"
-            else:
-                threshold_comparison += f"If we apply gap-based threshold, the results are unchanged ({len(gap_filtered_results)} documents) - no significant gaps detected.\n"
-            
-            threshold_comparison += f"\n**Adaptive Threshold Results ({len(adaptive_filtered_results)} documents):**\n"
-            if len(adaptive_filtered_results) < len(results):
-                threshold_comparison += f"If we apply adaptive threshold, the results are {len(adaptive_filtered_results)} documents instead of {len(results)}:\n"
-                for result in adaptive_filtered_results:
-                    threshold_comparison += f"  - {result['title']}, Page {result['page_number']} (Score: {result['similarity']:.4f})\n"
-            else:
-                threshold_comparison += f"If we apply adaptive threshold, the results are unchanged ({len(adaptive_filtered_results)} documents) - all documents meet the statistical threshold.\n"
             
             # Create the text response
-            text_response = f"{answer}{doc_info}{threshold_comparison}"
+            text_response = f"{doc_info}"
             
             # Return as an iterator that can be streamed
             def generate_response():
