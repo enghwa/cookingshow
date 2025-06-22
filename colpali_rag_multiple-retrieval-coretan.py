@@ -321,9 +321,12 @@ class Pipeline:
             })
         
         # Add the text query with context about multiple documents
-        query_text = f"Question: {query}\n\nSorted page numbers based on initial similarity score: {page_numbers} \n\nNote: You have been provided with {len(images)} sorted page numbers and images (adjacent) based on ther initial similarity score. Please evaluate the relevancy of each page(s) against the query. Although the page numbers and images have been ordered based on the initial similarity score, you are allowed to re-rank them if necessary and filter out the nonrelevant one(s). Return only a dictionary, where the key is the original page number that is relevant to the question and the value is your final rank, that is ready to be converted to a real dictionary, no need to add explanation or comment, pure dictionary only"
+        query_text = f"Question: {query} \n\nYou are given a list of pages from a PDF document:{page_numbers} \n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. \n\nReturn your output as a dictionary in this format: {{<page_number>: <final rank>}} \n\nOnly return this dictionary. Do not include any explanation or extra text."
+
+        # query_text = f"Question: {query} \n\nYou are given a list of pages from a PDF document:{page_numbers} \n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. You may also filter out the nonrelevant page(s). \n\nReturn your output as a dictionary in this format: {{<page_number>: <final rank>}} \n\nOnly return this dictionary. If no page is relevant to the query, return an empty dictionary. Do not include any explanation or extra text. "
+
         # query_text = f"Question: {query}\n\nNote: You have been provided with {len(images)} document page(s) that are relevant to this question. Please analyze all of them and provide a comprehensive answer."
-        
+
         messages[1]["content"].append({
             "type": "text",
             "text": query_text
@@ -409,41 +412,47 @@ class Pipeline:
             print(f"🤖 Generating comprehensive answer using VLM with {len(images)} images...")
 
             answer = self.query_vlm_api(query, images, page_numbers)
+            reranked_docs = ast.literal_eval(answer)
+            new_results = [0] * len(reranked_docs)
             
+            # Format the response with detailed document information
+            doc_info = f"\n\n📋 **Source Information ({len(reranked_docs)} documents analyzed):**\n"
+
+
+
+            doc_info += f"\n\nReranked docs: {reranked_docs}\n\nNew Results Initialization: {new_results}"
+
             try:
-                
-                reranked_docs = ast.literal_eval(answer)
-                new_results = [None] * len(reranked_docs)
-                
-                # Format the response with detailed document information
-                doc_info = f"\n\n📋 **Source Information ({len(reranked_docs)} documents analyzed):**\n"
-
-
-                doc_info += f"\n\nReranked docs: {reranked_docs}\n\nNew Results Initialization: {new_results}"
-
-
                 rank = 1
                 for result in results:
-                    if result['page_number'] in reranked_docs:
-                        new_rank = reranked_docs.get(result['page_number'])
+                    if isinstance(reranked_docs, dict) and result['page_number'] in reranked_docs:
+                        new_rank = int(reranked_docs.get(result['page_number']))
                         result['rank'] = new_rank
                         new_results[new_rank-1] = result
+                        # return str(result)
                     
-                    doc_info += f"\n**{rank}. {new_results['title']}**\n"
-                    doc_info += f"   - Page: {new_results['page_number']}"
-                    if new_results.get('total_pages'):
-                        doc_info += f" of {new_results['total_pages']}"
-                    doc_info += f"\n   - Similarity Score: {new_results['similarity']:.4f}\n"
-                    rank += 1
+                    # doc_info += f"\n**{rank}. {new_results['title']}**\n"
+                    # doc_info += f"   - Page: {new_results['page_number']}"
+                    # if result.get('total_pages'):
+                    #     doc_info += f" of {new_results['total_pages']}"
+                #     doc_info += f"\n   - Similarity Score: {new_results['similarity']:.4f}\n"
+                    # rank += 1
                 
                 results = new_results
 
-                doc_info += f"\n\n{new_results}"
-                return doc_info
+                # doc_info += f"\n\n{str(new_results)}"
+                # return doc_info
 
 
             except Exception as e:
-                error_message = f"❌ Error query vlm api: {str(e)} \n\nanswer: {self.query_vlm_api(query, images, results)}"
+                new_rank = 0
+                for result in results:
+                    if result['page_number'] in reranked_docs:
+                        new_rank = int(reranked_docs.get(result['page_number']))
+                        break
+                # error_message = f"❌ Error query vlm api: {str(e)} \n\nanswer: {ast.literal_eval(self.query_vlm_api(query, images, results))}"
+                error_message = f"❌ Error query vlm api: {str(e)} \n\nanswer: {isinstance(new_rank, int)}"
+
                 return error_message
 
             
@@ -479,7 +488,7 @@ class Pipeline:
                 yield f"📸 **Retrieved Document Pages:**\n\n"
                 for result in results:
                     b64_img = self.encode_image_webp_to_base64(result["image"])
-                    yield f"**{result['rank']}. {result['title']} - Page {result['page_number']}** (Score: {result['similarity']:.4f})\n"
+                    yield f"**{result['rank']}. {result['title']} - Page {result['page_number']}**\n"
                     yield f"![Document Page {result['rank']}](data:image/webp;base64,{b64_img})\n\n"
                 
                 yield "\n---\n*Powered by ColPali Multi-Vector RAG with Multiple Document Retrieval and Threshold Filtering*\n"
