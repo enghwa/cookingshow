@@ -43,10 +43,10 @@ class Pipeline:
             QDRANT_URL=os.getenv("QDRANT_URL", "http://my-qdrant-url"),
             QDRANT_API_KEY=os.getenv("QDRANT_API_KEY", ""),
             COLLECTION_NAME=os.getenv("QDRANT_COLLECTION", "my_collection"),
-            VLM_SYS_PROMPT=os.getenv("VLM_SYS_PROMPT", "Anda adalah seorang analis dokumen ahli dengan pengalaman luas dalam analisis lintas dokumen dan sintesis informasi. Tugas Anda adalah:  1. FASE ANALISIS: - Analisis setiap gambar dokumen yang diberikan secara individual - Identifikasi informasi kunci, termasuk tanggal, angka, topik utama, dan detail penting - Catat setiap hubungan atau kontradiksi antar dokumen  2. FASE RINGKASAN: - Berikan ringkasan singkat untuk setiap dokumen - Buat ringkasan terpadu yang menyoroti tema umum dan temuan kunci - Tunjukkan kualitas/kejelasan gambar dan setiap keterbatasan dalam membacanya  3. FASE JAWABAN PERTANYAAN: - Jawab pertanyaan spesifik menggunakan bukti dari dokumen - Kutip referensi spesifik menggunakan pengidentifikasi dokumen (misalnya, 'Dokumen A menyatakan...') - Soroti di mana beberapa dokumen mendukung suatu temuan - Tunjukkan dengan jelas jika ada informasi yang diperlukan yang hilang atau tidak jelas  Format jawaban Anda dengan: - Judul bagian yang jelas - Poin-poin untuk informasi kunci - Kutipan langsung ketika sangat relevan - Referensi silang antar dokumen  Jika Anda menemui keterbatasan dalam kualitas gambar atau kejelasan konten, harap nyatakan keterbatasan tersebut secara eksplisit dalam analisis Anda. Kembalikan respons dalam bahasa Indonesia."),
+            VLM_SYS_PROMPT=os.getenv("VLM_SYS_PROMPT", "Anda adalah seorang analis dokumen ahli dengan pengalaman luas dalam analisis lintas dokumen dan sintesis informasi. Tugas Anda adalah:  1. FASE ANALISIS: - Analisis setiap gambar dokumen yang diberikan secara individual - Identifikasi informasi kunci, termasuk tanggal, angka, topik utama, dan detail penting - Catat setiap hubungan atau kontradiksi antar dokumen  2. FASE RINGKASAN: - Berikan ringkasan singkat untuk setiap dokumen - Buat ringkasan terpadu yang menyoroti tema umum dan kata kunci - Tunjukkan kualitas/kejelasan gambar dan setiap keterbatasan dalam membacanya  3. FASE JAWABAN PERTANYAAN: - Jawab pertanyaan spesifik dari pengguna berdasarkan bukti dari dokumen, perhatikan kata kunci antara pertanyaan pengguna dan dokumen - Kutip referensi spesifik menggunakan pengidentifikasi dokumen (misalnya, 'Dokumen A menyatakan...') - Soroti di mana beberapa dokumen menjawab pertanyaan pengguna - Tunjukkan dengan jelas jika ada informasi yang diperlukan yang hilang atau tidak jelas  Format jawaban Anda dengan: - Judul bagian yang jelas - Poin-poin untuk informasi kunci - Kutipan langsung ketika sangat relevan - Referensi silang antar dokumen  Jika Anda menemui keterbatasan dalam kualitas gambar atau kejelasan konten, harap nyatakan keterbatasan tersebut secara eksplisit dalam analisis Anda. Kembalikan respons dalam bahasa Indonesia."),
             TOP_K=int(os.getenv("TOP_K", "3")),
             GAP_BASED_THRESHOLD=os.getenv("GAP_BASED_THRESHOLD", "0.1"),
-            ADAPTIVE_THRESHOLD=os.getenv("ADAPTIVE_THRESHOLD", "1.0")
+            ADAPTIVE_THRESHOLD=os.getenv("ADAPTIVE_THRESHOLD", "0.6")
         )
         
         self.client = None
@@ -294,7 +294,7 @@ class Pipeline:
         image.save(buffered, format="WebP", quality=75)
         return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-    def query_vlm_api(self, query: str, images: list, page_numbers: list) -> str:
+    def query_vlm_api(self, query: str, images: list, pages: list, additional_query: str) -> str:
         """Queries VLM API with text and multiple images using OpenAI-compatible endpoint"""
         system_prompt = self.valves.VLM_SYS_PROMPT
         
@@ -321,9 +321,7 @@ class Pipeline:
             })
         
         # Add the text query with context about multiple documents
-        query_text = f"Question: {query} \n\nYou are given a list of pages from a PDF document:{page_numbers} \n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. If a page is irrelevant or unhelpful, feel free to exclude it from the result. \n\nReturn your output as a dictionary in this format: {{<page_number>: <final rank>}} \n\nOnly return this dictionary. Do not include any explanation or extra text."
-
-        # query_text = f"Question: {query}\n\nNote: You have been provided with {len(images)} document page(s) that are relevant to this question. Please analyze all of them and provide a comprehensive answer."
+        query_text = f"Question: {query} \n\nYou are given a list of pages from a PDF document:{pages}. {additional_query}"
 
         messages[1]["content"].append({
             "type": "text",
@@ -393,21 +391,22 @@ class Pipeline:
         
             # Apply threshold filtering
             adaptive_filtered_results = self.adaptive_threshold(results, std_multiplier=self.valves.ADAPTIVE_THRESHOLD)
-            
-            # Extract images and metadata from all results using adaptive threshold
-            images = [result["image"] for result in adaptive_filtered_results]
-            page_numbers = [result["page_number"] for result in results]
 
             try:
-                answer = self.query_vlm_api(query, images, page_numbers)
+                answer = self.query_vlm_api(query, 
+                                            images=[result["image"] for result in adaptive_filtered_results], 
+                                            pages=results, 
+                                            additional_query="\n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. If a page is irrelevant or unhelpful, feel free to exclude it from the result. \n\nReturn your output as a dictionary in this format: {<page_number>: <final rank>} \n\nOnly return this dictionary. Do not include any explanation or extra text.")
+                
                 reranked_docs = ast.literal_eval(answer)
+
                 new_results = [0] * len(reranked_docs)
 
                 # Format the response with detailed document information
                 doc_info = f"\n\n📋 **Source Information ({len(reranked_docs)} documents analyzed):**\n"
                 
-                # Get the answer from the VLM API with all images (original results)
-                print(f"🤖 Generating re-ranked answer using VLM with {len(images)} images...")
+                # Get the answer from the VLM API with all images
+                print(f"🤖 Generating re-ranked answer using VLM")
 
                 for result in results:
                     if isinstance(reranked_docs, dict) and result['page_number'] in reranked_docs:
@@ -416,12 +415,20 @@ class Pipeline:
                         new_results[new_rank-1] = result
                 results = new_results
 
+                # Get the summary from the VLM API
+                print(f"🤖 Generating the answer text using VLM")
+
+                summary = self.query_vlm_api(query, 
+                                             images=[result["image"] for result in results], 
+                                             pages=results,
+                                             additional_query="Please analyze all of the pages and provide the correct answer relevant to user's query.")
+
             except Exception as e:
                 error_message = f"❌ Error query vlm api: {str(e)}"
                 return error_message
             
             # Create the text response
-            text_response = f"{doc_info}"
+            text_response = f"{summary} \n\n{doc_info}"
             
             # Return as an iterator that can be streamed
             def generate_response():
