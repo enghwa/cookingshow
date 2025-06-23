@@ -406,7 +406,7 @@ class Pipeline:
                 doc_info = f"\n\n📋 **Source Information ({len(reranked_docs)} documents analyzed):**\n"
                 
                 # Get the answer from the VLM API with all images
-                print(f"🤖 Generating re-ranked answer using VLM")
+                print("🤖 Generating re-ranked answer using VLM")
 
                 for result in results:
                     if isinstance(reranked_docs, dict) and result['page_number'] in reranked_docs:
@@ -416,7 +416,7 @@ class Pipeline:
                 results = new_results
 
                 # Get the summary from the VLM API
-                print(f"🤖 Generating the answer text using VLM")
+                print("🤖 Generating the answer text using VLM")
 
                 summary = self.query_vlm_api(query, 
                                              images=[result["image"] for result in results], 
@@ -424,7 +424,8 @@ class Pipeline:
                                              additional_query="Please analyze all of the pages and provide the correct answer relevant to user's query.")
 
             except Exception as e:
-                error_message = f"❌ Error query vlm api: {str(e)}"
+                print(f"❌ Error query vlm api: {str(e)}")
+                error_message = f"❌ No document is found relevant to the query"
                 return error_message
             
             # Create the text response
