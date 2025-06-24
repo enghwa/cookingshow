@@ -396,9 +396,12 @@ class Pipeline:
                 answer = self.query_vlm_api(query, 
                                             images=[result["image"] for result in adaptive_filtered_results], 
                                             pages=results, 
-                                            additional_query="\n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. If a page is irrelevant or unhelpful, feel free to exclude it from the result. \n\nReturn your output as a dictionary in this format: {<page_number>: <final rank>} \n\nOnly return this dictionary. Do not include any explanation or extra text.")
+                                            additional_query="\n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. If a page is irrelevant or unhelpful, feel free to exclude it from the result. \n\nReturn your output as a plain text in this format: {<page_number>: <final rank>} \n\nOnly return the plain text 'dictionary'. Do not include any explanation or extra text. If you think all documents are not relevant to the query, return empty {}.")
                 
-                reranked_docs = ast.literal_eval(answer)
+                reranked_docs = ast.literal_eval(str(answer))
+
+                if (len(reranked_docs) == 0):
+                    return "❌ No relevant documents found for your question."
 
                 new_results = [0] * len(reranked_docs)
 
