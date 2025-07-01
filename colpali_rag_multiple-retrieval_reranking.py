@@ -388,15 +388,12 @@ class Pipeline:
             print(f"📄 Found {len(results)} relevant document(s) before threshold filtering:")
             for result in results:
                 print(f"  {result['rank']}. {result['title']}, Page {result['page_number']} (Score: {result['similarity']:.4f})")
-        
-            # Apply threshold filtering
-            adaptive_filtered_results = self.adaptive_threshold(results, std_multiplier=self.valves.ADAPTIVE_THRESHOLD)
 
             try:
                 answer = self.query_vlm_api(query, 
-                                            images=[result["image"] for result in adaptive_filtered_results], 
+                                            images=[result["image"] for result in results], 
                                             pages=results, 
-                                            additional_query="\n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. If a page is irrelevant or unhelpful, feel free to exclude it from the result. \n\nReturn your output as a plain text in this format: {<page_number>: <final rank>} \n\nOnly return the plain text 'dictionary'. Do not include any explanation or extra text. If you think all documents are not relevant to the query, return empty {}.")
+                                            additional_query="\n\nEach page includes metadata such as its page number and an image of the page. The list is initially ordered by a similarity score, but I want you to independently evaluate the content of the provided pages (e.g., based on their text, layout, or visual cues) and re-rank them based on their relevance or importance. Ensure the reranking is based on the provided pages only, do not add other pages. If a page is irrelevant or unhelpful, feel free to exclude it from the result. \n\nReturn your output as a plain text in this format: {<page_number>: <final rank>} \n\nOnly return the plain text 'dictionary'. Do not include any explanation or extra text. If you think all the provided documents are not relevant to the query, return empty {}.")
                 
                 reranked_docs = ast.literal_eval(str(answer))
 
